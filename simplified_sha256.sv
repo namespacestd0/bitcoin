@@ -5,7 +5,7 @@ module simplified_sha256(input logic clk, reset_n, start,
 	output logic [31:0] mem_write_data,
 	input logic [31:0] mem_read_data);
 	
-	enum logic [3:0]{IDLE, R0, R1, C1, C2, A1, A2, B1, B2, W} state;
+	enum logic [3:0]{IDLE, R0, R1, C1, C2, A1, A2, A3, B1, B2, B3, W} state;
 	
 	logic [15:0] read_address, write_address; // Simply a copy of the input addressed
 	logic [15:0] read_count, write_count; // read, write address offset, cycle tracker
@@ -24,7 +24,7 @@ module simplified_sha256(input logic clk, reset_n, start,
 	logic [31:0] w[16]; // the latest 16 w values
 	logic [31:0] A, B, C, D, E, F, G, H;
 
-	logic [31:0] S1, S0, t0, t1, t2, ch, s1ch, ktw, maj, t_plus_one; //temporary values for A-H computation
+	logic [31:0] S1, S0, t0, t1, t2, ch, s1ch, ktw, maj, t_plus_one, h7k0; //temporary values for A-H computation
 
 	logic	is1stRound = 1; //
 	logic [15:0] t; // Computation cycle counter range from 0 to 63
@@ -164,13 +164,11 @@ module simplified_sha256(input logic clk, reset_n, start,
 				
 				C2:
 					begin
-						if (t == 63) begin
+						if (t == 61) begin
 							if (is1stRound)
 								state				<= A2;
 							else
 								state				<= B2;
-							mem_addr 		<= read_address;
-							read_address	<= read_address + 1;
 						end
 						t_plus_one			<= t_plus_one + 1;
 						// **w[17/16-65]**
@@ -184,26 +182,31 @@ module simplified_sha256(input logic clk, reset_n, start,
 				end
 				
 				A2:
-					begin
-						state				<= C1;
+					begin // t = 62
+						state				<= A3;
 						is1stRound		<= 0;
-						t					<= 0;
-						h[0]				<= h[0] + A;
-						h[1]				<= h[1] + B;
-						h[2]				<= h[2] + C;
-						h[3]				<= h[3] + D;
-						h[4]				<= h[4] + E;
-						h[5]				<= h[5] + F;
-						h[6]				<= h[6] + G;
-						h[7]				<= h[7] + H;						
-						A					<= h[0] + A;
-						B					<= h[1] + B; 
-						C					<= h[2] + C; 
-						D					<= h[3] + D; 
-						E					<= h[4] + E; 
-						F					<= h[5] + F; 
-						G					<= h[6] + G; 
-						H					<= h[7] + H;
+						t					<= t_plus_one;
+						//  **t0 of 63**						
+						t0					<= G + k[t_plus_one] + w[15];
+						// **request mem[17]**
+						mem_addr			<= read_address;
+						read_address	<= read_address + 1;
+						// **t1 of 62 modified**
+						S1 				= rrot(E, 6) ^ rrot(E, 11) ^ rrot(E, 25);
+						ch 				= (E & F) ^ ((~E) & G);
+						S0 				= rrot(A, 2) ^ rrot(A, 13) ^ rrot(A, 22);
+						maj 				= (A & B) ^ (A & C) ^ (B & C);
+						t1 				= S1 + ch + t0;
+						t2 				= S0 + maj;
+						{A, B, C, D, E, F, G, H}  = {t1 + t2, A, B, C + h[4], D + t1, E, F, G};	
+						// pre-compute h7+k0 for next cycle
+						h7k0				<= h[7] + k[0];
+					end
+					
+				A3:
+					begin // t = 63
+						state				<= C1;
+						t					<= 0;						
 						w[4]				<= 32'h80000000;
 						w[5]		 		<= 32'h00000000;
 						w[6]		 		<= 32'h00000000;
@@ -215,36 +218,90 @@ module simplified_sha256(input logic clk, reset_n, start,
 						w[12]		 		<= 32'h00000000;
 						w[13]		 		<= 32'h00000000;
 						w[14]		 		<= 32'h00000000;
-						w[15] 			<= 32'd640;
-						// **request mem[17]**
+						w[15] 			<= 32'd640;					
+						// **request mem[18]**
 						mem_addr			<= read_address;
-						read_address	<= read_address + 1;
+						read_address	<= read_address + 1;	
 						// **read mem[16] to w[0]**
 						w[read_count]	<= mem_read_data;
 						read_count		<= read_count + 1;
 						// **t0 of 0 for second round**
-						t0					<= h[7] + H + k[0] + mem_read_data;					
+						t0					<= G + h7k0 + mem_read_data;	
+						// **t1 of 63 modified**
+						S1 				= rrot(E, 6) ^ rrot(E, 11) ^ rrot(E, 25);
+						ch 				= (E & F) ^ ((~E) & G);
+						S0 				= rrot(A, 2) ^ rrot(A, 13) ^ rrot(A, 22);
+						maj 				= (A & B) ^ (A & C) ^ (B & C);
+						t1 				= S1 + ch + t0;
+						t2 				= S0 + maj + h[0];
+						A					<= t1 + t2;
+						B					<= h[1] + A; 
+						C					<= h[2] + B; 
+						D					<= h[3] + C; 
+						E					<= D + t1; 
+						F					<= h[5] + E; 
+						G					<= h[6] + F; 
+						H					<= h[7] + G;	
+						h[0]				<= t1 + t2;
+						h[1]				<= h[1] + A; 
+						h[2]				<= h[2] + B; 
+						h[3]				<= h[3] + C; 
+						h[4]				<= D + t1; 
+						h[5]				<= h[5] + E; 
+						h[6]				<= h[6] + F; 
+						h[7]				<= h[7] + G;						
+					end
+				
+				B2:
+					begin // t = 62
+						state				<= B3;
+						t					<= t_plus_one;
+						//  **t0 of 63**						
+						t0					<= G + k[t_plus_one] + w[15];
+						// **t1 of 62 modified**
+						S1 				= rrot(E, 6) ^ rrot(E, 11) ^ rrot(E, 25);
+						ch 				= (E & F) ^ ((~E) & G);
+						S0 				= rrot(A, 2) ^ rrot(A, 13) ^ rrot(A, 22);
+						maj 				= (A & B) ^ (A & C) ^ (B & C);
+						t1 				= S1 + ch + t0;
+						t2 				= S0 + maj;
+						{A, B, C, D, E, F, G, H}  = {t1 + t2, A, B, C + h[4], D + t1, E, F, G};											
 					end
 					
-				B2:
-					begin
+				B3:
+					begin // t = 63
 						state				<= W;
-						// *write attemp mem[write_address] = h[0]*
+						t					<= 0;									
+						// **t1 of 63 modified**
+						S1 				= rrot(E, 6) ^ rrot(E, 11) ^ rrot(E, 25);
+						ch 				= (E & F) ^ ((~E) & G);
+						S0 				= rrot(A, 2) ^ rrot(A, 13) ^ rrot(A, 22);
+						maj 				= (A & B) ^ (A & C) ^ (B & C);
+						t1 				= S1 + ch + t0;
+						t2 				= S0 + maj + h[0];
+						A					<= t1 + t2;
+						B					<= h[1] + A; 
+						C					<= h[2] + B; 
+						D					<= h[3] + C; 
+						E					<= D + t1; 
+						F					<= h[5] + E; 
+						G					<= h[6] + F; 
+						H					<= h[7] + G;	
+						h[0]				<= t1 + t2;
+						h[1]				<= h[1] + A; 
+						h[2]				<= h[2] + B; 
+						h[3]				<= h[3] + C; 
+						h[4]				<= D + t1; 
+						h[5]				<= h[5] + E; 
+						h[6]				<= h[6] + F; 
+						h[7]				<= h[7] + G;
+						// *write attemp mem[write_address] = h[write_count]*
 						mem_addr 		<= write_address;
-						mem_write_data	<= h[0] + A;
-						mem_we			<= 1;
+						mem_write_data	<= t1 + t2;
+						mem_we			<= 1;	
 						// *next write source index and destination update*
-						write_count		<= 1;
-						write_address	<= write_address + 1;
-						t						<= 0;
-						h[0]					<= h[0] + A;
-						h[1]					<= h[1] + B;
-						h[2]					<= h[2] + C;
-						h[3]					<= h[3] + D;
-						h[4]					<= h[4] + E;
-						h[5]					<= h[5] + F;
-						h[6]					<= h[6] + G;
-						h[7]					<= h[7] + H;						
+						write_address		<= write_address + 1;
+						write_count			<= 1;							
 					end
 				
 				W:
