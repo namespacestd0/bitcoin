@@ -5,7 +5,7 @@ module simplified_sha256(input logic clk, reset_n, start,
 	output logic [31:0] mem_write_data,
 	input logic [31:0] mem_read_data);
 	
-	enum logic [3:0]{IDLE, R, R0, R1, C1, CE, CG, C2, C3, R2, R3, W} state;
+	enum logic [3:0]{IDLE, R0, R1, C1, CE, CG, C2, C3, W} state;
 	
 	logic [15:0] read_address, write_address; // Simply a copy of the input addressed
 	logic [15:0] read_count, write_count; // read, write address offset, cycle tracker
@@ -76,18 +76,18 @@ module simplified_sha256(input logic clk, reset_n, start,
 						h[6] <= 32'h1f83d9ab;
 						h[7] <= 32'h5be0cd19;
 						if (start) begin
-							state 				<= R0;
+							state 			<= R0;
 							done					<= 0;
 							// **request mem[0]**
-							read_address		<= message_addr + 1;
-							mem_addr 			<= message_addr; 
+							read_address	<= message_addr + 1;
+							mem_addr 		<= message_addr; 
 							// save write address
-							write_address		<= output_addr;
+							write_address	<= output_addr;
 						end
 					end
 				R0:
 					begin
-						state				<= R1;
+						state					<= R1;
 						// initialize A-H
 						A <= h[0];
 						B <= h[1];
@@ -142,17 +142,17 @@ module simplified_sha256(input logic clk, reset_n, start,
 					end
 
 				CE:
-					begin
+					begin // t = 14 here read_count = 15 here
 						state					<= C2;
 						// **read mem[15] to 14 because of upcoming rotation**
 						w[14]					<= mem_read_data;
 						read_count			<= 0;
-						// **w[16]**
+						// **w[16]** t = 14 here
 						for (int n = 0; n < 14; n++) w[n] <= w[n+1];
 						w[15] 				<= wtnew();
 						// **t0 of 15**
-						t0 					<= G + k[t+1] + mem_read_data;
-						t						<= t + 1;
+						t0 					<= G + k[read_count] + mem_read_data;
+						t						<= read_count; // t = 15
 						// **t1 of 14**
 						S1 					= rrot(E, 6) ^ rrot(E, 11) ^ rrot(E, 25);
 						ch 					= (E & F) ^ ((~E) & G);
@@ -167,9 +167,11 @@ module simplified_sha256(input logic clk, reset_n, start,
 					begin
 						if (t == 13)
 							state				<= C2;
+						// use read_count to help track of t+1, starts from 4
+						read_count			<= read_count + 1;
 						//  **t0 of 4-14**
-						t0						<= G + k[t+1] + w[t+1];
-						t						<= t + 1;
+						t0						<= G + k[read_count] + w[read_count];
+						t						<= read_count;
 						//  **t1 of 3-13**
 						S1 					= rrot(E, 6) ^ rrot(E, 11) ^ rrot(E, 25);
 						ch 					= (E & F) ^ ((~E) & G);
@@ -189,17 +191,17 @@ module simplified_sha256(input logic clk, reset_n, start,
 						end
 						// **w[17/16-65]**
 						for (int n = 0; n < 15; n++) w[n] <= w[n+1];
-						w[15] 			<= wtnew();
+						w[15] 				<= wtnew();
 						//  **t0 of 16/15-64**
-						t0					<= G + k[t+1] + w[15];
-						t					<= t + 1;
+						t0						<= G + k[t+1] + w[15];
+						t						<= t + 1;
 						//  **t1 of 15/14-63**
-						S1 				= rrot(E, 6) ^ rrot(E, 11) ^ rrot(E, 25);
-						ch 				= (E & F) ^ ((~E) & G);
-						S0 				= rrot(A, 2) ^ rrot(A, 13) ^ rrot(A, 22);
-						maj 				= (A & B) ^ (A & C) ^ (B & C);
-						t1 				= S1 + ch + t0;
-						t2 				= S0 + maj;
+						S1 					= rrot(E, 6) ^ rrot(E, 11) ^ rrot(E, 25);
+						ch 					= (E & F) ^ ((~E) & G);
+						S0 					= rrot(A, 2) ^ rrot(A, 13) ^ rrot(A, 22);
+						maj 					= (A & B) ^ (A & C) ^ (B & C);
+						t1 					= S1 + ch + t0;
+						t2 					= S0 + maj;
 						{A, B, C, D, E, F, G, H} 	<= {t1 + t2, A, B, C, D + t1, E, F, G};
 					end
 				
@@ -244,88 +246,19 @@ module simplified_sha256(input logic clk, reset_n, start,
 							write_count		<= 1;
 							write_address	<= write_address + 1;
 						end
-						t					<= 0;
-						h[0]				<= h[0] + A;
-						h[1]				<= h[1] + B;
-						h[2]				<= h[2] + C;
-						h[3]				<= h[3] + D;
-						h[4]				<= h[4] + E;
-						h[5]				<= h[5] + F;
-						h[6]				<= h[6] + G;
-						h[7]				<= h[7] + H;
+						t						<= 0;
+						h[0]					<= h[0] + A;
+						h[1]					<= h[1] + B;
+						h[2]					<= h[2] + C;
+						h[3]					<= h[3] + D;
+						h[4]					<= h[4] + E;
+						h[5]					<= h[5] + F;
+						h[6]					<= h[6] + G;
+						h[7]					<= h[7] + H;
 						// below is not necessary for second round
 						//  **t0 of 0** put here for performance
-						t0					<= h[7] + H + k[0] + mem_read_data;
+						t0						<= h[7] + H + k[0] + mem_read_data;
 					end
-											
-//				C3:
-//					begin
-//						if (is1stRound) begin
-//							state 		<= R2;
-//							w[4]			<= 32'h80000000;
-//							w[5]		 	<= 32'h00000000;
-//							w[6]		 	<= 32'h00000000;
-//							w[7]		 	<= 32'h00000000;
-//							w[8]		 	<= 32'h00000000;
-//							w[9]		 	<= 32'h00000000;
-//							w[10]		 	<= 32'h00000000;
-//							w[11]		 	<= 32'h00000000;
-//							w[12]		 	<= 32'h00000000;
-//							w[13]		 	<= 32'h00000000;
-//							w[14]		 	<= 32'h00000000;
-//							w[15] 		<= 32'd640;
-//							is1stRound	<= 0;
-//							mem_we		<= 0;
-//							mem_addr 	<= read_address + read_count - 2;
-//							t					<= 0;
-//							A					<= h[0] + A;
-//							B					<= h[1] + B; 
-//							C					<= h[2] + C; 
-//							D					<= h[3] + D; 
-//							E					<= h[4] + E; 
-//							F					<= h[5] + F; 
-//							G					<= h[6] + G; 
-//							H					<= h[7] + H;
-//							read_count		<= read_count - 1;
-//						end else begin
-//							state			<= W;
-//						end
-//						h[0]				<= h[0] + A;
-//						h[1]				<= h[1] + B;
-//						h[2]				<= h[2] + C;
-//						h[3]				<= h[3] + D;
-//						h[4]				<= h[4] + E;
-//						h[5]				<= h[5] + F;
-//						h[6]				<= h[6] + G;
-//						h[7]				<= h[7] + H;
-//					end
-//					
-//				R2:
-//					begin
-//						state				<= R3;
-//						read_count		<= read_count + 1;
-//						mem_addr			<= read_address + read_count;	
-//					end
-//					
-//				R3:
-//					begin
-//						if (read_count == 34) begin
-//							state 			<= C1;
-//							for (int n = 0; n < 15; n++) w[n] <= w[n+1];
-//							w[15] <= wtnew();
-//						end else begin
-//							state 			<= R3;
-//							if (read_count < 22)
-//								w[read_count-18]<= mem_read_data;
-//							read_count		<= read_count + 1;
-//							mem_addr			<= read_address + read_count;
-//							if (t < 4)
-//								{A, B, C, D, E, F, G, H} <= sha256_op(A, B, C, D, E, F, G, H, mem_read_data, t);
-//							else
-//								{A, B, C, D, E, F, G, H} <= sha256_op(A, B, C, D, E, F, G, H, w[t], t);
-//							t					<= t + 1;
-//						end
-//					end
 				
 				W:
 					begin
@@ -333,11 +266,11 @@ module simplified_sha256(input logic clk, reset_n, start,
 							state 			<= IDLE;
 						end
 						// *write attemp mem[write_address] = h[write_count]*
-						mem_addr 		<= write_address;
-						mem_write_data	<= h[write_count];
+						mem_addr 			<= write_address;
+						mem_write_data		<= h[write_count];
 						// *next write source index and destination update*
-						write_address	<= write_address + 1;
-						write_count		<= write_count + 1;	
+						write_address		<= write_address + 1;
+						write_count			<= write_count + 1;	
 					end
 			endcase
 	end
