@@ -121,16 +121,20 @@ module bitcoin_hash(input logic clk, reset_n, start,
 
 				R1:
 					begin
-						state					<= C1;
+						state					<= SHA256;
+						sw_mem_read				<= 1;
+						sw_wt_update			<= 0;
+						sw_t0					<= 1; // from mem_read
 						// **request mem[2]**
-						mem_addr 			<= read_address;
-						read_address		<= read_address + 1;
+						mem_addr 				<= read_address;
+						read_address			<= read_address + 1;
 						// **read mem[0] and prepare next index**
 						w[0]					<= mem_read_data;
-						read_to			<= 1;
+						read_to					<= 1;
 						// **pre-compute t0 of 0**
-						t0 					<= H + k[0] + mem_read_data;
+						t0 						<= H + k[0] + mem_read_data;
 						t						<= 0;
+						t_plus_one				<= 1;
 					end
 					
 				C1:
@@ -161,7 +165,10 @@ module bitcoin_hash(input logic clk, reset_n, start,
 
 				A1:
 					begin // t = 14 here read_to = 15 here
-						state					<= C2;
+						state					<= SHA256;
+						sw_mem_read				<= 0;
+						sw_wt_update			<= 1;
+						sw_t0					<= 3; // from w[15]				
 						// **read mem[15] to 14 because of upcoming rotation**
 						w[14]					<= mem_read_data;
 						read_to			<= 0;
@@ -214,6 +221,11 @@ module bitcoin_hash(input logic clk, reset_n, start,
 				A2:
 					begin
 						state				<= C1;
+						// state					<= SHA256;
+						sw_mem_read				<= 1;
+						sw_wt_update			<= 0;
+						sw_t0					<= 1; // from mem_read	
+						//
 						round				<= 1;
 						t					<= 0;
 						h[0]				<= h[0] + A;
@@ -375,13 +387,24 @@ module bitcoin_hash(input logic clk, reset_n, start,
 				SHA256:
 					begin
 						// state transition
-						if (t==13) begin
-							state				<= SHA256;
+						if (t==1) begin
+							if (n==0 && round==1) begin
+								sw_mem_read			<= 0;
+								sw_wt_update		<= 0;
+								sw_t0				<= 1; // base on w[t+1]
+							end
+						end else if (t==13) begin
+							if (n==0 && round==0)
+								state				<= A1;
 							sw_mem_read			<= 0;
 							sw_wt_update		<= 1;
 							sw_t0				<= 3; // base on w[15]
 						end else if (t==63) begin
-							if (round==1)
+							if (n==0 && round==0) begin
+								state				<= A2;
+								mem_addr 			<= read_address;
+								read_address		<= read_address + 1;
+							end else if (round==1) // n>0
 								state				<= T2;
 							else // round = 2
 								state				<= T3;
