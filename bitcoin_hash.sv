@@ -5,7 +5,7 @@ module bitcoin_hash(input logic clk, reset_n, start,
 	output logic [31:0] mem_write_data,
 	input logic [31:0] mem_read_data);
 	
-	enum logic [3:0]{IDLE, R0, R1, A1, A2, B1, B2, T0, T1, T2, T3, SHA256} state;
+	enum logic [3:0]{IDLE, R0, R1, A1, A2, B1, B2, C1, C2, C3, SHA256} state, nextState;
 	
 	logic [15:0] read_address, write_address; // NEXT read or write address
 	logic [15:0] read_to, write_from; // Next read of write index or counter
@@ -25,7 +25,7 @@ module bitcoin_hash(input logic clk, reset_n, start,
 	logic [31:0] m16, m17, m18; 	// mem[16-18] backup
 	logic [31:0] A, B, C, D, E, F, G, H;
 
-	logic [31:0] s1, s0, t0, t1, t2, ch, s1ch, ktw, maj; //temporary values for A-H computation
+	logic [31:0] s1, s0, t0, t1, t2, ch, s1ch, ktw, maj, a, b; //temporary values for A-H computation
 
 	logic [1:0] round; // round is 0,1,2
 	logic [15:0] t; // Computation cycle counter range from 0 to 63
@@ -34,6 +34,7 @@ module bitcoin_hash(input logic clk, reset_n, start,
 
 	logic sw_mem_read;	// request mem[read_address], w[read_to]=mem_read_data
 	logic sw_wt_update;	// update w[0-15]
+
 	logic [1:0] sw_t0;	// pre-compute t0 of t from mem_read_data, w[t+1] or w[15]
 	logic [31:0] wt;	// switching wire for above
 	// logic [15:0] last_t; // break out condition
@@ -113,6 +114,7 @@ module bitcoin_hash(input logic clk, reset_n, start,
 						F <= h[5];
 						G <= h[6];
 						H <= h[7];
+						a <= k[0] + h[7]; // optimization
 						// **request mem[1]**
 						mem_addr 			<= read_address;
 						read_address		<= read_address + 1;
@@ -132,9 +134,143 @@ module bitcoin_hash(input logic clk, reset_n, start,
 						w[0]					<= mem_read_data;
 						read_to					<= 1;
 						// **pre-compute t0 of 0**
-						t0 						<= H + k[0] + mem_read_data;
+						t0 						<= mem_read_data + a;
 						t						<= 0;
 						t_plus_one				<= 1;
+					end
+					
+				SHA256:
+					begin
+						// state transition
+						if (t==1) begin
+							if (n==0 && round==1) begin
+								sw_mem_read			<= 0;
+								sw_wt_update		<= 0;
+								sw_t0				<= 1; // base on w[t+1]
+							end
+						end else if (t==13) begin
+							if (n==0 && round==0)
+								state				<= A1;
+							sw_mem_read			<= 0;
+							sw_wt_update		<= 1;
+							sw_t0				<= 3; // base on w[15]
+						end else if (t==63) begin
+							if (n==0 && round==0) begin
+								state				<= A2;
+								mem_addr 			<= read_address;
+								read_address		<= read_address + 1;
+							end else if (n==0 && round==1) begin
+								state				<= B2;							
+							end else if (round==1) // n>0
+								state				<= C2;
+							else // round = 2
+								state				<= C3;
+						end
+						//
+						if (sw_mem_read) begin
+							mem_addr 			<= read_address;
+							read_address		<= read_address + 1;
+							w[read_to]			<= mem_read_data;
+							read_to				<= read_to + 1;
+						end
+						
+						if (sw_wt_update) begin
+							for (int n = 0; n < 15; n++) w[n] <= w[n+1];
+							w[15] 				<= wtnew();
+						end
+
+						if (sw_t0) begin
+							if (sw_t0 == 1)
+								wt					= mem_read_data;
+							else if (sw_t0 == 2)
+								wt					= w[t_plus_one];
+							else
+								wt					= w[15];
+							// pre compute t0 of t+1 with w of t+1 selected above 
+							t0					<= G + k[t_plus_one] + wt;
+							t					<= t_plus_one;
+							t_plus_one			<= t_plus_one + 1;
+						end
+
+						{A, B, C, D, E, F, G, H}<= opAtoH();
+
+					end
+
+				A1:
+					begin // t = 14 here read_to = 15 here
+						state					<= SHA256;
+						sw_mem_read				<= 0;
+						sw_wt_update			<= 1;
+						sw_t0					<= 3; // from w[15]				
+						// **read mem[15] to 14 because of upcoming rotation**
+						w[t]					<= mem_read_data;
+						read_to			<= 0;
+						// **w[16]** t = 14 here
+						for (int n = 0; n < 14; n++) w[n] <= w[n+1];
+						w[15] 				<= wtnew();
+						// **t0 of 15**
+						t0 					<= G + k[read_to] + mem_read_data;
+						t						<= read_to; // t = 15
+						t_plus_one			<= 16;
+						// **t1 of 14**
+						{A, B, C, D, E, F, G, H} 	<= opAtoH();
+					end
+					
+				A2:
+					begin
+						state				<= B1;
+						round				<= 1;
+						a = h[7] + H;
+						b = k[0] + mem_read_data;
+						h[0]				<= h[0] + A;
+						h[1]				<= h[1] + B;
+						h[2]				<= h[2] + C;
+						h[3]				<= h[3] + D;
+						h[4]				<= h[4] + E;
+						h[5]				<= h[5] + F;
+						h[6]				<= h[6] + G;
+						h[7]				<= a;							
+						h0					<= h[0] + A;
+						h1					<= h[1] + B;
+						h2					<= h[2] + C;
+						h3					<= h[3] + D;
+						h4					<= h[4] + E;
+						h5					<= h[5] + F;
+						h6					<= h[6] + G;
+						h7					<= a;						
+						A					<= h[0] + A;
+						B					<= h[1] + B; 
+						C					<= h[2] + C; 
+						D					<= h[3] + D; 
+						E					<= h[4] + E; 
+						F					<= h[5] + F; 
+						G					<= h[6] + G; 
+						H					<= a;
+						w[3]				<= 32'h00000000;						
+						w[4]				<= 32'h80000000;
+						w[5]		 		<= 32'h00000000;
+						w[6]		 		<= 32'h00000000;
+						w[7]		 		<= 32'h00000000;
+						w[8]		 		<= 32'h00000000;
+						w[9]		 		<= 32'h00000000;
+						w[10]		 		<= 32'h00000000;
+						w[11]		 		<= 32'h00000000;
+						w[12]		 		<= 32'h00000000;
+						w[13]		 		<= 32'h00000000;
+						w[14]		 		<= 32'h00000000;
+						w[15] 			<= 32'd640;
+						// **request mem[17]**
+						mem_addr			<= read_address;
+						read_address	<= read_address + 1;
+						// **read mem[16] to w[0]**
+						w[read_to]	<= mem_read_data;
+						read_to		<= read_to + 1;
+						// **t0 of 0 for second round**
+						t0					<= a + b;
+						t					<= 0;
+						t_plus_one			<= 1;		
+						// backup mem[16/0]
+						m16					<= mem_read_data;
 					end
 					
 				B1:
@@ -168,86 +304,6 @@ module bitcoin_hash(input logic clk, reset_n, start,
 								m18					<= mem_read_data;
 					end
 
-				A1:
-					begin // t = 14 here read_to = 15 here
-						state					<= SHA256;
-						sw_mem_read				<= 0;
-						sw_wt_update			<= 1;
-						sw_t0					<= 3; // from w[15]				
-						// **read mem[15] to 14 because of upcoming rotation**
-						w[14]					<= mem_read_data;
-						read_to			<= 0;
-						// **w[16]** t = 14 here
-						for (int n = 0; n < 14; n++) w[n] <= w[n+1];
-						w[15] 				<= wtnew();
-						// **t0 of 15**
-						t0 					<= G + k[read_to] + mem_read_data;
-						t						<= read_to; // t = 15
-						t_plus_one			<= 16;
-						// **t1 of 14**
-						{A, B, C, D, E, F, G, H} 	<= opAtoH();
-					end
-					
-				A2:
-					begin
-						state				<= B1;
-						// state					<= SHA256;
-						// sw_mem_read				<= 1;
-						// sw_wt_update			<= 0;
-						// sw_t0					<= 1; // from mem_read	
-						//
-						round				<= 1;
-						t					<= 0;
-						h[0]				<= h[0] + A;
-						h[1]				<= h[1] + B;
-						h[2]				<= h[2] + C;
-						h[3]				<= h[3] + D;
-						h[4]				<= h[4] + E;
-						h[5]				<= h[5] + F;
-						h[6]				<= h[6] + G;
-						h[7]				<= h[7] + H;							
-						h0					<= h[0] + A;
-						h1					<= h[1] + B;
-						h2					<= h[2] + C;
-						h3					<= h[3] + D;
-						h4					<= h[4] + E;
-						h5					<= h[5] + F;
-						h6					<= h[6] + G;
-						h7					<= h[7] + H;						
-						A					<= h[0] + A;
-						B					<= h[1] + B; 
-						C					<= h[2] + C; 
-						D					<= h[3] + D; 
-						E					<= h[4] + E; 
-						F					<= h[5] + F; 
-						G					<= h[6] + G; 
-						H					<= h[7] + H;
-						w[3]				<= 32'h00000000;						
-						w[4]				<= 32'h80000000;
-						w[5]		 		<= 32'h00000000;
-						w[6]		 		<= 32'h00000000;
-						w[7]		 		<= 32'h00000000;
-						w[8]		 		<= 32'h00000000;
-						w[9]		 		<= 32'h00000000;
-						w[10]		 		<= 32'h00000000;
-						w[11]		 		<= 32'h00000000;
-						w[12]		 		<= 32'h00000000;
-						w[13]		 		<= 32'h00000000;
-						w[14]		 		<= 32'h00000000;
-						w[15] 			<= 32'd640;
-						// **request mem[17]**
-						mem_addr			<= read_address;
-						read_address	<= read_address + 1;
-						// **read mem[16] to w[0]**
-						w[read_to]	<= mem_read_data;
-						read_to		<= read_to + 1;
-						// **t0 of 0 for second round**
-						t0					<= h[7] + H + k[0] + mem_read_data;
-						t_plus_one			<= 1;		
-						// backup mem[16/0]
-						m16					<= mem_read_data;
-					end
-					
 				B2:
 					begin
 						// state					<= B1;
@@ -296,21 +352,9 @@ module bitcoin_hash(input logic clk, reset_n, start,
 						t						<= 0;
 						t_plus_one				<= 1;
 					end
-				T0:
-					begin
-						state					<= T1;
-						// write a result
-						mem_we					<= 1;
-						mem_addr				<= write_address + n;
-						mem_write_data 			<= h[0] + A;
-						// count nounce
-						n						<= n + 1;
-						// 
-						if ( n == 15)
-							done					<= 1;						
-					end					
+			
 		
-				T1: // new beginning after first round
+				C1: // new beginning after first round
 					begin
 						state				<= SHA256;
 						sw_mem_read			<= 0;
@@ -359,66 +403,7 @@ module bitcoin_hash(input logic clk, reset_n, start,
 						t0					<= h7 + k[0] + m16;	
 					end
 
-				SHA256:
-					begin
-						// state transition
-						if (t==1) begin
-							if (n==0 && round==1) begin
-								sw_mem_read			<= 0;
-								sw_wt_update		<= 0;
-								sw_t0				<= 1; // base on w[t+1]
-							end
-						end else if (t==13) begin
-							if (n==0 && round==0)
-								state				<= A1;
-							sw_mem_read			<= 0;
-							sw_wt_update		<= 1;
-							sw_t0				<= 3; // base on w[15]
-						end else if (t==63) begin
-							if (n==0 && round==0) begin
-								state				<= A2;
-								mem_addr 			<= read_address;
-								read_address		<= read_address + 1;
-							end else if (n==0 && round==1) begin
-								state				<= B2;							
-							end else if (n==0 && round==2) begin
-								state				<= T0;
-							end else if (round==1) // n>0
-								state				<= T2;
-							else // round = 2
-								state				<= T3;
-						end
-						//
-						if (sw_mem_read) begin
-							mem_addr 			<= read_address;
-							read_address		<= read_address + 1;
-							w[read_to]			<= mem_read_data;
-							read_to				<= read_to + 1;
-						end
-						
-						if (sw_wt_update) begin
-							for (int n = 0; n < 15; n++) w[n] <= w[n+1];
-							w[15] 				<= wtnew();
-						end
-
-						if (sw_t0) begin
-							if (sw_t0 == 1)
-								wt					= mem_read_data;
-							else if (sw_t0 == 2)
-								wt					= w[t_plus_one];
-							else
-								wt					= w[15];
-							// pre compute t0 of t+1 with w of t+1 selected above 
-							t0					<= G + k[t_plus_one] + wt;
-							t					<= t_plus_one;
-							t_plus_one			<= t_plus_one + 1;
-						end
-
-						{A, B, C, D, E, F, G, H}<= opAtoH();
-
-					end
-
-				T2:
+				C2:
 					begin
 						state				<= SHA256;
 						sw_mem_read			<= 0;
@@ -459,18 +444,18 @@ module bitcoin_hash(input logic clk, reset_n, start,
 						w[13]		 			<= 32'h00000000;
 						w[14]		 			<= 32'h00000000;
 						w[15] 					<= 32'd256;
-						
 						//  **t0 of 0**
 						t0						<= 32'h5be0cd19 + k[0] + h[0] + A;
 						t						<= 0;
 						t_plus_one				<= 1;
 					end
-				T3:
+
+				C3:
 					begin
 						if ( n == 15)
 							state					<= IDLE;
 						else
-							state					<= T1;
+							state					<= C1;
 						// write a result
 						mem_we					<= 1;
 						mem_addr				<= write_address + n;
