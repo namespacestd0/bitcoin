@@ -1,0 +1,4 @@
+*
+!*.sv
+*tb*.sv
+!.gitignore
