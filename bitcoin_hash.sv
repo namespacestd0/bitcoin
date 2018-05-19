@@ -5,7 +5,7 @@ module bitcoin_hash(input logic clk, reset_n, start,
 	output logic [31:0] mem_write_data,
 	input logic [31:0] mem_read_data);
 	
-	enum logic [3:0]{IDLE, R0, R1, C1, C2, A1, A2, B1, B2, W} state;
+	enum logic [3:0]{IDLE, R0, R1, C1, C2, C3, A1, A2, B1, B2, W} state;
 	
 	logic [15:0] read_address, write_address; // Simply a copy of the input addressed
 	logic [15:0] read_count, write_count; // read, write address offset, cycle tracker
@@ -26,9 +26,9 @@ module bitcoin_hash(input logic clk, reset_n, start,
 
 	logic [31:0] S1, S0, t0, t1, t2, ch, s1ch, ktw, maj, t_plus_one; //temporary values for A-H computation
 
-	logic	is1stRound = 1; //
+	logic	[1:0] round; //
 	logic [15:0] t; // Computation cycle counter range from 0 to 63
-	
+	logic [31:0] n; // nonce range from 0 to 15
 	assign mem_clk = clk;
 
 
@@ -96,6 +96,7 @@ module bitcoin_hash(input logic clk, reset_n, start,
 						// **request mem[1]**
 						mem_addr 			<= read_address;
 						read_address		<= read_address + 1;
+						round 				<= 0;
 					end
 
 				R1:
@@ -114,9 +115,9 @@ module bitcoin_hash(input logic clk, reset_n, start,
 					
 				C1:
 					begin
-						if (is1stRound && read_address == 16)
+						if (!round && read_address == 16)
 							state				<= A1;
-						else if (!is1stRound && t == 2)
+						else if (round && t == 1)
 							state				<= B1;
 						// **request mem[3-16] or mem[19-21] for second round**
 						mem_addr 			<= read_address;
@@ -165,10 +166,12 @@ module bitcoin_hash(input logic clk, reset_n, start,
 				C2:
 					begin
 						if (t == 63) begin
-							if (is1stRound)
+							if (!round)
 								state				<= A2;
-							else
+							else if(round == 1)
 								state				<= B2;
+							else
+								state 			<= C3;
 							mem_addr 		<= read_address;
 							read_address	<= read_address + 1;
 						end
@@ -182,11 +185,11 @@ module bitcoin_hash(input logic clk, reset_n, start,
 						//  **t1 of 15/14-63**
 						{A, B, C, D, E, F, G, H} 	<= opAtoH();
 				end
-				
+
 				A2:
 					begin
 						state				<= C1;
-						is1stRound		<= 0;
+						round				<= 1;
 						t					<= 0;
 						h[0]				<= h[0] + A;
 						h[1]				<= h[1] + B;
@@ -204,6 +207,7 @@ module bitcoin_hash(input logic clk, reset_n, start,
 						F					<= h[5] + F; 
 						G					<= h[6] + G; 
 						H					<= h[7] + H;
+						w[3]				<= 32'h00000000;						
 						w[4]				<= 32'h80000000;
 						w[5]		 		<= 32'h00000000;
 						w[6]		 		<= 32'h00000000;
@@ -228,37 +232,49 @@ module bitcoin_hash(input logic clk, reset_n, start,
 					
 				B2:
 					begin
-						state				<= W;
-						// *write attemp mem[write_address] = h[0]*
-						mem_addr 		<= write_address;
-						mem_write_data	<= h[0] + A;
-						mem_we			<= 1;
-						// *next write source index and destination update*
-						write_count		<= 1;
-						write_address	<= write_address + 1;
+						state					<= C2;
+						round 				<= 2;
 						t						<= 0;
-						h[0]					<= h[0] + A;
-						h[1]					<= h[1] + B;
-						h[2]					<= h[2] + C;
-						h[3]					<= h[3] + D;
-						h[4]					<= h[4] + E;
-						h[5]					<= h[5] + F;
-						h[6]					<= h[6] + G;
-						h[7]					<= h[7] + H;						
+						h[0]					<= 32'h6a09e667;
+						h[1]					<= 32'hbb67ae85;
+						h[2]					<= 32'h3c6ef372;
+						h[3]					<= 32'ha54ff53a;
+						h[4]					<= 32'h510e527f;
+						h[5]					<= 32'h9b05688c;
+						h[6]					<= 32'h1f83d9ab;
+						h[7]					<= 32'h5be0cd19;	
+						
+						w[0]					<= h[0] + A;
+						w[1]					<= h[1] + B;
+						w[2]					<= h[2] + C;
+						w[3]					<= h[3] + D;
+						w[4]					<= h[4] + E;
+						w[5]					<= h[5] + F;
+						w[6]					<= h[6] + G;
+						w[7]					<= h[7] + H;	
+						w[8]		 			<= 32'h80000000;
+						w[9]		 			<= 32'h00000000;
+						w[10]		 			<= 32'h00000000;
+						w[11]		 			<= 32'h00000000;
+						w[12]		 			<= 32'h00000000;
+						w[13]		 			<= 32'h00000000;
+						w[14]		 			<= 32'h00000000;
+						w[15] 				<= 32'd256;
+						
+						//  **t0 of 16/15-64**
+						t0						<= h[7] + H + k[0] + h[0] + A;
+						t						<= 0;
+						t_plus_one			<= 1;
 					end
-				
-				W:
+				C3:
 					begin
-						if (write_count == 7) begin
-							state 			<= IDLE;
-						end
-						// *write attemp mem[write_address] = h[write_count]*
-						mem_addr 			<= write_address;
-						mem_write_data		<= h[write_count];
-						// *next write source index and destination update*
-						write_address		<= write_address + 1;
-						write_count			<= write_count + 1;	
-					end
+						state					<= IDLE;
+						mem_write_data 	<= h[0]+A;
+						mem_addr				<= write_address;
+						mem_we				<= 1;				
+					end					
+		
+					
 			endcase
 	end
  
