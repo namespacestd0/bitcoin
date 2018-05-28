@@ -23,8 +23,7 @@ module bitcoin_hash(input logic clk, reset_n, start,
 		32'h6a09e667,32'hbb67ae85,32'h3c6ef372,32'ha54ff53a,32'h510e527f,32'h9b05688c,32'h1f83d9ab,32'h5be0cd19};
 	logic [31:0] w[32], AtoH[8], h[8], h0[8]; 
 	logic [31:0] m16, m17, m18; 	// mem[16-18] backup
-	logic [31:0] t0; //temporary values for A-H computation
-	logic [31:0] s1, ch, s0, maj; //temporary values for A-H computation TODO can be removed maybe
+	logic [31:0] t0,t00; //temporary values for A-H computation
 
 	logic [1:0] round; // round is 0,1,2
 	logic [7:0] t, t_plus_one; // Computation cycle counter range from 0 to 63+1
@@ -42,47 +41,19 @@ module bitcoin_hash(input logic clk, reset_n, start,
 			s1 = rrot(w[14],17)^rrot(w[14],19)^(w[14]>>10);
 			wtnew = w[0] + s0 + w[9] + s1;
 	endfunction
-
-	function logic [127:0] opAtoH_bitOp; // compute s1, s0, ch, maj
-		logic [31:0] s1, ch, s0, maj;
+	
+	function logic [255:0] opAtoH;
+		logic [31:0] t1, t2, s1, ch, s0, maj;
 			s1 					= rrot(AtoH[4], 6) ^ rrot(AtoH[4], 11) ^ rrot(AtoH[4], 25);
 			ch 					= (AtoH[4] & AtoH[5]) ^ ((~AtoH[4]) & AtoH[6]);
 			s0 					= rrot(AtoH[0], 2) ^ rrot(AtoH[0], 13) ^ rrot(AtoH[0], 22);
 			maj 				= (AtoH[0] & AtoH[1]) ^ (AtoH[0] & AtoH[2]) ^ (AtoH[1] & AtoH[2]);
-			opAtoH_bitOp		= {s1, ch, s0, maj};
-	endfunction
-	
-	function logic [255:0] opAtoH;
-		logic [31:0] t1, t2;
-			{s1, ch, s0, maj} 	= opAtoH_bitOp();
 			t1 					= s1 + ch + t0;
 			t2 					= s0 + maj;
 			opAtoH = {t1 + t2, AtoH[0], AtoH[1], AtoH[2], AtoH[3] + t1, AtoH[4], AtoH[5], AtoH[6]};
 	endfunction
 
 	assign mem_clk = clk;
-	// always_ff @(posedge clk) begin
-	// 	case(commonOp)
-	// 		0:begin
-	// 		end
-	// 		1:begin
-	// 			// ** Main Operation **
-	// 			{AtoH[0],AtoH[1],AtoH[2],AtoH[3],AtoH[4],AtoH[5],AtoH[6],AtoH[7]} <= opAtoH();
-	// 			// ** t0 Precomputation**
-	// 			t0		<= AtoH[6] + k[t_plus_one] + w[15];
-	// 			// ** wt PreComputation **
-	// 			for (int n = 0; n < 15; n++) w[n] <= w[n+1];
-	// 			if (t<=15) begin
-	// 				if (round==0)
-	// 					w[15] <= mem_read_data;
-	// 				else
-	// 					for (int m = 15; m < 31; m++) w[m] <= w[m+1];
-	// 			end else begin// t>=15
-	// 				w[15] 	<= wtnew();
-	// 			end
-	// 		end
-	// 	endcase
-	// end
 
 	always_ff @(posedge clk, negedge reset_n) begin
 		if (!reset_n) begin
@@ -140,7 +111,7 @@ module bitcoin_hash(input logic clk, reset_n, start,
 
 			S2: begin 
 				state			<= S3;
-				commonOp	<= 1;
+				commonOp		<= 1;
 				t				<= t_plus_one;
 				t_plus_one		<= t_plus_one + 1;
 				round			<= 0;
@@ -195,6 +166,7 @@ module bitcoin_hash(input logic clk, reset_n, start,
 				for(int i=0;i<8;i++) h[i] <= h[i] + AtoH[i];	// regular update
 				// ** Precompute t0 of 0
 				t0					<= h[7] + AtoH[7] + k[0] + m16;
+				t00					<= h[7] + AtoH[7] + k[0] + m16;
 			end
 
 			S5: begin
@@ -212,7 +184,7 @@ module bitcoin_hash(input logic clk, reset_n, start,
 
 			S6: begin // ** major transition
 				state 			<= S7;
-				commonOp	<= 1;
+				commonOp		<= 1;
 				round			<= 2;
 				t				<= t_plus_one;
 				t_plus_one		<= t_plus_one + 1;
@@ -241,17 +213,34 @@ module bitcoin_hash(input logic clk, reset_n, start,
 			end
 
 			S8: begin
-				state 			<= IDLE;
-				// commonOp	<= 1;
+				if (n==15)
+					state			<= IDLE;
+				else begin
+					state 			<= S5;
+					commonOp		<= 1;
+					round			<= 1;
+					t				<= t_plus_one;
+					t_plus_one		<= t_plus_one + 1;
+				end
+				n				<= n + 1;
 				round			<= 3;
-				// t				<= t_plus_one;
-				// t_plus_one		<= t_plus_one + 1;
 				// ** update h0-7 nad A-H
 				for(int i=0;i<8;i++) h[i] <= h[i] + AtoH[i];	// regular update
 				// write
 				mem_we			<= 1;
-				mem_addr		<= write_address;
+				mem_addr		<= write_address + n;
 				mem_write_data	<= h[0] + AtoH[0];
+				// ** fill w values
+				w[14]				<= m16;
+				w[15]				<= m17;
+				w[16]				<= m18;
+				w[17]				<= n+1;						
+				w[18]				<= 32'h80000000;
+				for(int i=19;i<29;i++) w[i] <= 32'h00000000;
+				w[29] 				<= 32'd640;
+				for(int i=0;i<8;i++) AtoH[i] <= h0[i];
+				for(int i=0;i<8;i++) h[i] <= h0[i];
+				t0					<= t00;
 			end
 		endcase
 		end
